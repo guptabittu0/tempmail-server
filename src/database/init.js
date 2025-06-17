@@ -4,6 +4,28 @@ const initializeDatabase = async () => {
   try {
     console.log('Initializing database...');
 
+    // Test database connection first
+    try {
+      await query('SELECT 1');
+      console.log('✅ Database connection successful');
+    } catch (error) {
+      console.error('❌ Database connection failed:', error.message);
+      throw error;
+    }
+
+    // Check permissions
+    try {
+      await query('SELECT has_schema_privilege(current_user, \'public\', \'CREATE\') as can_create');
+      console.log('✅ Schema permissions check passed');
+    } catch (error) {
+      console.error('❌ Permission check failed:', error.message);
+      console.log('\n🔧 To fix this issue, run one of the following:');
+      console.log('1. Run: npm run setup-db (as postgres superuser)');
+      console.log('2. Or manually execute the commands in scripts/setup-database.sql');
+      console.log('3. Or use Docker: npm run docker:up\n');
+      throw new Error('Database permissions insufficient. See instructions above.');
+    }
+
     // Create temporary email addresses table
     await query(`
       CREATE TABLE IF NOT EXISTS temp_emails (
@@ -15,6 +37,7 @@ const initializeDatabase = async () => {
         access_token VARCHAR(255) UNIQUE
       )
     `);
+    console.log('✅ Created temp_emails table');
 
     // Create emails table
     await query(`
@@ -35,6 +58,7 @@ const initializeDatabase = async () => {
         size_bytes INTEGER DEFAULT 0
       )
     `);
+    console.log('✅ Created emails table');
 
     // Create indexes for better performance
     await query(`
@@ -56,10 +80,26 @@ const initializeDatabase = async () => {
     await query(`
       CREATE INDEX IF NOT EXISTS idx_emails_recipient ON emails(recipient_email);
     `);
+    console.log('✅ Created database indexes');
 
-    console.log('Database initialized successfully!');
+    console.log('🎉 Database initialized successfully!');
   } catch (error) {
-    console.error('Error initializing database:', error);
+    if (error.code === '42501') {
+      console.error('\n❌ Permission denied for schema public');
+      console.log('\n🔧 SOLUTION: Grant proper permissions to your database user:');
+      console.log('1. Connect to PostgreSQL as superuser:');
+      console.log('   psql -U postgres');
+      console.log('\n2. Run these commands:');
+      console.log('   GRANT ALL ON SCHEMA public TO tempmail_user;');
+      console.log('   GRANT CREATE ON SCHEMA public TO tempmail_user;');
+      console.log('   ALTER DATABASE tempmail_db OWNER TO tempmail_user;');
+      console.log('\n3. Or run our setup script:');
+      console.log('   npm run setup-db');
+      console.log('\n4. Or use Docker for easier setup:');
+      console.log('   npm run docker:up');
+    } else {
+      console.error('Error initializing database:', error);
+    }
     throw error;
   }
 };
@@ -72,7 +112,7 @@ if (require.main === module) {
       process.exit(0);
     })
     .catch((error) => {
-      console.error('Database setup failed:', error);
+      console.error('Database setup failed:', error.message);
       process.exit(1);
     });
 }

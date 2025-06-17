@@ -8,6 +8,8 @@
     "dev": "nodemon src/server.js",
     "init-db": "node src/database/init.js",
     "setup": "node scripts/setup.js",
+    "setup-db": "psql -U postgres -f scripts/setup-database.sql",
+    "fix-permissions": "node scripts/fix-permissions.js",
     "test": "jest",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
