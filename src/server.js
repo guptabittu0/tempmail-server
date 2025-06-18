@@ -6,12 +6,13 @@ require('dotenv').config();
 
 // Import routes and services
 const tempEmailRoutes = require('./routes/tempEmailRoutes');
-const { SMTPHandler } = require('./services/postfixHandler');
 const cleanupScheduler = require('./services/cleanupScheduler');
 const { initializeDatabase } = require('./database/init');
+const SMTPHandler = require('./services/smptServer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const SMTP_PORT = parseInt(process.env.SMTP_PORT) || 25;
 
 // Security middleware
 app.use(helmet({
@@ -50,7 +51,9 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     environment: process.env.NODE_ENV || 'development',
-    version: process.env.npm_package_version || '1.0.0'
+    version: process.env.npm_package_version || '1.0.0',
+    smtpPort: SMTP_PORT,
+    emailDomain: process.env.EMAIL_DOMAIN
   });
 });
 
@@ -76,7 +79,9 @@ app.get('/api/admin/stats', async (req, res) => {
         server: {
           uptime: process.uptime(),
           memoryUsage: process.memoryUsage(),
-          nodeVersion: process.version
+          nodeVersion: process.version,
+          smtpPort: SMTP_PORT,
+          emailDomain: process.env.EMAIL_DOMAIN
         }
       }
     });
@@ -106,84 +111,47 @@ app.post('/api/admin/cleanup', async (req, res) => {
   }
 });
 
+// SMTP Server info endpoint
+app.get('/api/smtp/info', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      smtpPort: SMTP_PORT,
+      smtpHost: '0.0.0.0',
+      emailDomain: process.env.EMAIL_DOMAIN,
+      isDirectSMTP: true,
+      postfixRequired: false,
+      instructions: {
+        dns: `Set MX record: ${process.env.EMAIL_DOMAIN} -> your-server-ip`,
+        firewall: `Open port ${SMTP_PORT} for incoming emails`,
+        testing: `Send email to: anything@${process.env.EMAIL_DOMAIN}`
+      }
+    }
+  });
+});
+
 // API documentation endpoint
 app.get('/api/docs', (req, res) => {
   const docs = {
-    name: 'TempMail Server API',
+    name: 'TempMail Server API (Direct SMTP)',
     version: '1.0.0',
-    description: 'Temporary email service with PostgreSQL backend',
+    description: 'Temporary email service with direct SMTP server (no Postfix required)',
     baseUrl: `${req.protocol}://${req.get('host')}/api`,
+    smtpServer: {
+      port: SMTP_PORT,
+      domain: process.env.EMAIL_DOMAIN,
+      type: 'Direct SMTP (no relay required)'
+    },
+    setup: {
+      dns: `MX record: ${process.env.EMAIL_DOMAIN} 10 your-server-ip`,
+      firewall: `Allow port ${SMTP_PORT}`,
+      postfix: 'Not required - direct SMTP server'
+    },
     endpoints: {
-      'POST /temp-email/generate': {
-        description: 'Generate a new temporary email address',
-        body: {
-          customAddress: 'string (optional) - Custom email address',
-          expiryHours: 'number (optional) - Hours until expiry (default: 24, max: 168)'
-        },
-        response: {
-          email: 'string - Generated email address',
-          token: 'string - Access token for this email',
-          expiresAt: 'string - ISO date when email expires',
-          createdAt: 'string - ISO date when email was created'
-        }
-      },
-      'GET /temp-email/:token/emails': {
-        description: 'Get emails for a temporary email address',
-        params: {
-          token: 'string - Access token'
-        },
-        query: {
-          limit: 'number (optional) - Number of emails to return (default: 50, max: 100)',
-          offset: 'number (optional) - Number of emails to skip (default: 0)',
-          onlyUnread: 'boolean (optional) - Only return unread emails (default: false)'
-        }
-      },
-      'GET /temp-email/:token/emails/:emailId': {
-        description: 'Get specific email content',
-        params: {
-          token: 'string - Access token',
-          emailId: 'string - Email ID'
-        }
-      },
-      'DELETE /temp-email/:token/emails/:emailId': {
-        description: 'Delete specific email',
-        params: {
-          token: 'string - Access token',
-          emailId: 'string - Email ID'
-        }
-      },
-      'DELETE /temp-email/:token/emails': {
-        description: 'Delete all emails for temporary email address',
-        params: {
-          token: 'string - Access token'
-        }
-      },
-      'POST /temp-email/:token/search': {
-        description: 'Search emails',
-        params: {
-          token: 'string - Access token'
-        },
-        body: {
-          query: 'string - Search query',
-          limit: 'number (optional) - Max results (default: 20)',
-          offset: 'number (optional) - Results offset (default: 0)'
-        }
-      },
-      'PUT /temp-email/:token/extend': {
-        description: 'Extend temporary email expiry',
-        params: {
-          token: 'string - Access token'
-        },
-        body: {
-          hours: 'number - Additional hours (default: 24, max: 168)'
-        }
-      },
-      'GET /temp-email/:token/stats': {
-        description: 'Get email statistics',
-        params: {
-          token: 'string - Access token'
-        }
-      }
+      'GET /smtp/info': 'Get SMTP server configuration',
+      'POST /temp-email/generate': 'Generate temporary email',
+      'GET /temp-email/:token/emails': 'Get emails for temp address',
+      'GET /admin/stats': 'Server statistics'
     }
   };
 
@@ -198,8 +166,8 @@ app.use('*', (req, res) => {
     available: [
       'GET /health',
       'GET /api/docs',
+      'GET /api/smtp/info',
       'POST /api/temp-email/generate',
-      'GET /api/temp-email/:token/emails',
       'GET /api/admin/stats'
     ]
   });
@@ -225,7 +193,7 @@ process.on('SIGINT', gracefulShutdown);
 function gracefulShutdown(signal) {
   console.log(`Received ${signal}. Starting graceful shutdown...`);
   
-  server.close(() => {
+  httpServer.close(() => {
     console.log('HTTP server closed.');
     
     // Stop cleanup scheduler
@@ -248,44 +216,82 @@ function gracefulShutdown(signal) {
 // Start the server
 async function startServer() {
   try {
-    console.log('Initializing TempMail Server...');
+    console.log('🚀 Initializing TempMail Direct SMTP Server...');
+    console.log(`📧 Email Domain: ${process.env.EMAIL_DOMAIN}`);
+    console.log(`🔌 SMTP Port: ${SMTP_PORT}`);
+    console.log(`🌐 HTTP Port: ${PORT}`);
+    
+    // Check if we can bind to SMTP port
+    if (SMTP_PORT < 1024 && process.getuid && process.getuid() !== 0) {
+      console.warn('⚠️  Warning: Binding to port < 1024 requires root privileges');
+      console.log('💡 Consider using port 2525 for development or run with sudo for production');
+    }
     
     // Initialize database
     await initializeDatabase();
-    console.log('Database initialized successfully');
+    console.log('✅ Database initialized successfully');
     
     // Start HTTP server
-    const server = app.listen(PORT, () => {
-      console.log(`TempMail Server running on port ${PORT}`);
-      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`Health check: http://localhost:${PORT}/health`);
-      console.log(`API Documentation: http://localhost:${PORT}/api/docs`);
+    const httpServer = app.listen(PORT, () => {
+      console.log(`✅ HTTP Server running on port ${PORT}`);
+      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+      console.log(`📖 API Documentation: http://localhost:${PORT}/api/docs`);
+      console.log(`🔧 SMTP Info: http://localhost:${PORT}/api/smtp/info`);
     });
 
     // Make server available for graceful shutdown
-    global.server = server;
+    global.httpServer = httpServer;
     
     // Start cleanup scheduler
     cleanupScheduler.start();
-    console.log('Cleanup scheduler started');
+    console.log('✅ Cleanup scheduler started');
     
-    // Start SMTP handler for incoming emails
-    const smtpPort = parseInt(process.env.SMTP_PORT) || 25000;
-    const smtpHandler = new SMTPHandler({ port: smtpPort });
+    // Start SMTP handler for incoming emails (DIRECT MODE)
+    const smtpHandler = new SMTPHandler({ 
+      port: SMTP_PORT,
+      host: '0.0.0.0'  // Listen on all interfaces
+    });
     
     try {
       await smtpHandler.start();
       global.smtpHandler = smtpHandler;
-      console.log(`SMTP handler listening on port ${smtpPort}`);
+      console.log(`✅ Direct SMTP server listening on port ${SMTP_PORT}`);
+      console.log(`📬 Ready to receive emails at: *@${process.env.EMAIL_DOMAIN}`);
+      console.log('');
+      console.log('🎉 TempMail Direct SMTP Server started successfully!');
+      console.log('');
+      console.log('📋 Setup Instructions:');
+      console.log(`1. Set DNS MX record: ${process.env.EMAIL_DOMAIN} -> your-server-ip`);
+      console.log(`2. Open firewall port: ${SMTP_PORT}`);
+      console.log(`3. Send test email to: test@${process.env.EMAIL_DOMAIN}`);
+      console.log('');
+      
     } catch (smtpError) {
-      console.warn('Could not start SMTP handler:', smtpError.message);
-      console.log('Email processing will be available via file processing only');
+      console.error('❌ Could not start SMTP handler:', smtpError.message);
+      
+      if (smtpError.code === 'EADDRINUSE') {
+        console.log('');
+        console.log('🔧 Solutions for port conflict:');
+        console.log('1. Stop other services using this port:');
+        console.log(`   sudo netstat -tlnp | grep :${SMTP_PORT}`);
+        console.log('2. Use a different port (edit SMTP_PORT in .env):');
+        console.log('   SMTP_PORT=2525  # Non-privileged port');
+        console.log('3. Run with admin privileges:');
+        console.log('   sudo node src/standalone-smtp-server.js');
+      } else if (smtpError.code === 'EACCES') {
+        console.log('');
+        console.log('🔧 Permission error - try one of:');
+        console.log('1. Use non-privileged port: SMTP_PORT=2525');
+        console.log('2. Run with admin privileges: sudo npm start');
+        console.log('3. Use port forwarding: iptables -t nat -A PREROUTING -p tcp --dport 25 -j REDIRECT --to-ports 2525');
+      }
+      
+      console.log('');
+      console.log('⚠️  SMTP server failed to start, but HTTP API is still available');
     }
     
-    console.log('TempMail Server started successfully!');
-    
   } catch (error) {
-    console.error('Failed to start server:', error);
+    console.error('❌ Failed to start server:', error);
     process.exit(1);
   }
 }
@@ -295,4 +301,4 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = app;
+module.exports = app; 

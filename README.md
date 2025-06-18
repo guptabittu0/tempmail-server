@@ -1,11 +1,11 @@
 # TempMail Server
 
-A powerful temporary email server built with Node.js, PostgreSQL, and Postfix integration. This server provides a complete solution for temporary email services with automatic cleanup, API access, and email processing capabilities.
+A powerful temporary email server built with Node.js and PostgreSQL with **Direct SMTP** integration. This server provides a complete solution for temporary email services with automatic cleanup, API access, and built-in email processing capabilities.
 
 ## Features
 
 - 🚀 **Fast & Scalable**: Built with Node.js and Express
-- 📧 **Email Processing**: Full Postfix integration for incoming emails
+- 📧 **Direct SMTP Server**: Built-in SMTP server for receiving emails (no Postfix needed!)
 - 🗄️ **PostgreSQL Storage**: Reliable database for emails and temporary addresses
 - 🔄 **Auto Cleanup**: Configurable automatic cleanup of expired emails
 - 🔒 **Rate Limited**: Built-in rate limiting to prevent abuse
@@ -19,7 +19,7 @@ A powerful temporary email server built with Node.js, PostgreSQL, and Postfix in
 
 - Node.js (v14 or higher)
 - PostgreSQL (v12 or higher)
-- Postfix (for email handling)
+- **No Postfix required!** (Direct SMTP server included)
 
 ### Installation
 
@@ -41,13 +41,17 @@ cp config.env.template .env
 npm run init-db
 ```
 
-4. **Start the server:**
+4. **Start the direct SMTP server:**
 ```bash
-# Development
-npm run dev
+# Start both HTTP API and SMTP server
+npm run start-smtp
 
-# Production
+# Or separately:
+# HTTP API only
 npm start
+
+# SMTP server only
+npm run smtp-only
 ```
 
 ## Configuration
@@ -70,7 +74,7 @@ DB_PASSWORD=your_secure_password
 
 # Email Configuration
 EMAIL_DOMAIN=yourdomain.com
-SMTP_PORT=25000
+SMTP_PORT=2525
 
 # Cleanup Configuration
 EMAIL_RETENTION_HOURS=24
@@ -91,34 +95,16 @@ GRANT ALL PRIVILEGES ON DATABASE tempmail_db TO tempmail_user;
 npm run init-db
 ```
 
-### Postfix Integration
+### SMTP Server Setup
 
-Configure Postfix to forward emails to the TempMail server:
+The built-in SMTP server handles email reception directly:
 
-1. **Add to `/etc/postfix/main.cf`:**
-```
-# TempMail configuration
-mydestination = yourdomain.com, localhost
-virtual_alias_domains = yourdomain.com
-virtual_alias_maps = hash:/etc/postfix/virtual
-transport_maps = hash:/etc/postfix/transport
-```
+- **Development**: Port 2525 (non-privileged)
+- **Production**: Port 25 (requires sudo/root)
 
-2. **Create `/etc/postfix/transport`:**
+Configure your MX records to point to your server:
 ```
-yourdomain.com    smtp:[localhost]:25000
-```
-
-3. **Create `/etc/postfix/virtual`:**
-```
-@yourdomain.com   tempmail
-```
-
-4. **Update Postfix maps:**
-```bash
-sudo postmap /etc/postfix/transport
-sudo postmap /etc/postfix/virtual
-sudo systemctl reload postfix
+yourdomain.com.    IN  MX  10  your-server-ip
 ```
 
 ## API Documentation
@@ -216,22 +202,30 @@ POST /api/admin/cleanup
 ### Project Structure
 ```
 src/
-├── database/          # Database configuration and initialization
-├── models/           # Data models (TempEmail, Email)
-├── routes/           # API routes
-├── services/         # Business logic (EmailService, PostfixHandler)
-├── middleware/       # Express middleware (rate limiting, validation)
-└── server.js         # Main server file
+├── database/             # Database configuration and initialization
+├── models/              # Data models (TempEmail, Email)
+├── routes/              # API routes
+├── services/            # Business logic (EmailService, SMTPHandler)
+├── middleware/          # Express middleware (rate limiting, validation)
+├── standalone-smtp-server.js  # Direct SMTP server (recommended)
+└── server.js            # HTTP API server only
+```
+
+### Running in Development
+```bash
+# Full server (HTTP + SMTP)
+npm run start-smtp
+
+# HTTP API only
+npm run dev
+
+# SMTP server only
+npm run smtp-only
 ```
 
 ### Running Tests
 ```bash
 npm test
-```
-
-### Development Mode
-```bash
-npm run dev
 ```
 
 ## Deployment
@@ -241,13 +235,14 @@ npm run dev
 1. **Set environment to production:**
 ```env
 NODE_ENV=production
+SMTP_PORT=25
 ```
 
 2. **Use process manager:**
 ```bash
 # Using PM2
 npm install -g pm2
-pm2 start src/server.js --name tempmail-server
+pm2 start src/standalone-smtp-server.js --name tempmail-server
 
 # Using systemd (create service file)
 sudo systemctl enable tempmail-server
@@ -269,6 +264,12 @@ server {
 }
 ```
 
+4. **DNS Configuration:**
+```
+yourdomain.com.    IN  A     your-server-ip
+yourdomain.com.    IN  MX    10  yourdomain.com.
+```
+
 ### Docker Deployment
 
 ```dockerfile
@@ -277,11 +278,17 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --only=production
 COPY src/ ./src/
-EXPOSE 3000
-CMD ["node", "src/server.js"]
+EXPOSE 3000 25
+CMD ["node", "src/standalone-smtp-server.js"]
 ```
 
 ## Features in Detail
+
+### Direct SMTP Server
+- Built-in SMTP server (no external dependencies)
+- Handles email reception and parsing
+- Attachment support
+- Real-time email processing
 
 ### Automatic Cleanup
 - Configurable retention period for emails
@@ -314,22 +321,44 @@ CMD ["node", "src/server.js"]
    - Check PostgreSQL is running
    - Verify credentials in `.env`
    - Ensure database exists
+   - Run `npm run init-db` to setup tables
 
-2. **Emails not received:**
-   - Check Postfix configuration
-   - Verify SMTP handler is running
-   - Check firewall settings
+2. **SMTP port in use:**
+   - Change `SMTP_PORT` in `.env` (use 2525 for development)
+   - Check if another service is using the port
 
-3. **Rate limiting too aggressive:**
+3. **Emails not received:**
+   - Verify MX records point to your server
+   - Check firewall allows traffic on SMTP port
+   - Ensure SMTP server is running
+
+4. **Rate limiting too aggressive:**
    - Adjust `RATE_LIMIT_MAX_REQUESTS` and `RATE_LIMIT_WINDOW_MS`
-   - Check IP detection with reverse proxy
 
 ### Logs
 Server logs include detailed information about:
 - Email processing
 - Database operations
+- SMTP server events
 - Cleanup operations
 - Error conditions
+
+## Migration from Postfix
+
+If you were previously using Postfix integration:
+
+1. **Remove Postfix configuration:**
+```bash
+chmod +x scripts/remove-postfix-config.sh
+sudo ./scripts/remove-postfix-config.sh
+```
+
+2. **Update MX records** to point directly to your server
+
+3. **Switch to direct SMTP:**
+```bash
+npm run start-smtp
+```
 
 ## Contributing
 
@@ -352,4 +381,5 @@ For issues and questions:
 
 ---
 
-Built with ❤️ using Node.js, PostgreSQL, and Express. 
+Built with ❤️ using Node.js, PostgreSQL, and Express.  
+**Now with Direct SMTP - No Postfix required!** 🚀 
