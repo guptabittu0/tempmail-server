@@ -3,14 +3,13 @@ const { v4: uuidv4 } = require('uuid');
 
 class TempEmail {
   static async create(emailAddress, hoursToExpire = 24) {
-    const accessToken = uuidv4();
     const expiresAt = new Date(Date.now() + (hoursToExpire * 60 * 60 * 1000));
     
     const result = await query(
-      `INSERT INTO temp_emails (email_address, expires_at, access_token) 
-       VALUES ($1, $2, $3) 
+      `INSERT INTO temp_emails (email_address, expires_at) 
+       VALUES ($1, $2) 
        RETURNING *`,
-      [emailAddress, expiresAt, accessToken]
+      [emailAddress, expiresAt]
     );
     
     return result.rows[0];
@@ -26,6 +25,7 @@ class TempEmail {
   }
 
   static async findByToken(accessToken) {
+    // Keep this method for backward compatibility during migration
     const result = await query(
       'SELECT * FROM temp_emails WHERE access_token = $1 AND is_active = true',
       [accessToken]

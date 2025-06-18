@@ -158,6 +158,25 @@ class EmailService {
     };
   }
 
+  static async getFullEmailData(email) {
+    // Return complete email data including full body and subject
+    return {
+      id: email.id,
+      from: email.sender_email,
+      fromName: email.sender_name,
+      subject: email.subject || '(No Subject)',
+      receivedAt: email.received_at,
+      isRead: email.is_read,
+      hasAttachments: email.attachments && Array.isArray(email.attachments) ? email.attachments.length > 0 : false,
+      size: email.size_bytes,
+      preview: this.createTextPreview(email.body_text, 150),
+      bodyText: email.body_text || '',
+      bodyHtml: email.body_html || '',
+      attachments: email.attachments || [],
+      headers: email.headers || {}
+    };
+  }
+
   static createTextPreview(text, maxLength = 150) {
     if (!text) return '';
     

@@ -26,7 +26,7 @@ const searchEmailsSchema = Joi.object({
   offset: Joi.number().integer().min(0).default(0)
 });
 
-// GET /api/temp-email/generate - Generate a new temporary email
+// POST /api/temp-email/generate - Generate a new temporary email
 router.post('/generate', rateLimiter, validateRequest(createTempEmailSchema), async (req, res) => {
   try {
     const { customAddress, expiryHours } = req.body;
@@ -64,7 +64,6 @@ router.post('/generate', rateLimiter, validateRequest(createTempEmailSchema), as
       success: true,
       data: {
         email: tempEmail.email_address,
-        token: tempEmail.access_token,
         expiresAt: tempEmail.expires_at,
         createdAt: tempEmail.created_at
       }
@@ -78,13 +77,16 @@ router.post('/generate', rateLimiter, validateRequest(createTempEmailSchema), as
   }
 });
 
-// GET /api/temp-email/:token/emails - Get emails for a temporary email
-router.get('/:token/emails', rateLimiter, validateRequest(getEmailsSchema, 'query'), async (req, res) => {
+// GET /api/temp-email/:email/emails - Get emails for a temporary email
+router.get('/:email/emails', rateLimiter, validateRequest(getEmailsSchema, 'query'), async (req, res) => {
   try {
-    const { token } = req.params;
+    const { email } = req.params;
     const { limit, offset, onlyUnread } = req.query;
     
-    const tempEmail = await TempEmail.findByToken(token);
+    // Decode email address (in case it was URL encoded)
+    const emailAddress = decodeURIComponent(email);
+    
+    const tempEmail = await TempEmail.findByEmail(emailAddress);
     if (!tempEmail) {
       return res.status(404).json({
         success: false,
@@ -110,15 +112,15 @@ router.get('/:token/emails', rateLimiter, validateRequest(getEmailsSchema, 'quer
     const totalCount = await Email.getEmailCount(tempEmail.id);
     const unreadCount = await Email.getEmailCount(tempEmail.id, true);
     
-    // Create email previews
-    const emailPreviews = await Promise.all(
-      emails.map(email => EmailService.getEmailPreview(email))
+    // Return full email content instead of just previews
+    const emailData = await Promise.all(
+      emails.map(email => EmailService.getFullEmailData(email))
     );
     
     res.json({
       success: true,
       data: {
-        emails: emailPreviews,
+        emails: emailData,
         pagination: {
           total: totalCount,
           unread: unreadCount,
@@ -141,12 +143,15 @@ router.get('/:token/emails', rateLimiter, validateRequest(getEmailsSchema, 'quer
   }
 });
 
-// GET /api/temp-email/:token/emails/:emailId - Get specific email content
-router.get('/:token/emails/:emailId', rateLimiter, async (req, res) => {
+// GET /api/temp-email/:email/emails/:emailId - Get specific email content
+router.get('/:email/emails/:emailId', rateLimiter, async (req, res) => {
   try {
-    const { token, emailId } = req.params;
+    const { email, emailId } = req.params;
     
-    const tempEmail = await TempEmail.findByToken(token);
+    // Decode email address (in case it was URL encoded)
+    const emailAddress = decodeURIComponent(email);
+    
+    const tempEmail = await TempEmail.findByEmail(emailAddress);
     if (!tempEmail) {
       return res.status(404).json({
         success: false,
@@ -154,8 +159,8 @@ router.get('/:token/emails/:emailId', rateLimiter, async (req, res) => {
       });
     }
     
-    const email = await Email.findById(emailId);
-    if (!email || email.temp_email_id !== tempEmail.id) {
+    const emailRecord = await Email.findById(emailId);
+    if (!emailRecord || emailRecord.temp_email_id !== tempEmail.id) {
       return res.status(404).json({
         success: false,
         error: 'Email not found'
@@ -166,7 +171,7 @@ router.get('/:token/emails/:emailId', rateLimiter, async (req, res) => {
     await Email.markAsRead(emailId);
     
     // Get full email content
-    const emailContent = await EmailService.getEmailContent(email);
+    const emailContent = await EmailService.getEmailContent(emailRecord);
     
     res.json({
       success: true,
@@ -187,12 +192,15 @@ router.get('/:token/emails/:emailId', rateLimiter, async (req, res) => {
   }
 });
 
-// DELETE /api/temp-email/:token/emails/:emailId - Delete specific email
-router.delete('/:token/emails/:emailId', rateLimiter, async (req, res) => {
+// DELETE /api/temp-email/:email/emails/:emailId - Delete specific email
+router.delete('/:email/emails/:emailId', rateLimiter, async (req, res) => {
   try {
-    const { token, emailId } = req.params;
+    const { email, emailId } = req.params;
     
-    const tempEmail = await TempEmail.findByToken(token);
+    // Decode email address (in case it was URL encoded)
+    const emailAddress = decodeURIComponent(email);
+    
+    const tempEmail = await TempEmail.findByEmail(emailAddress);
     if (!tempEmail) {
       return res.status(404).json({
         success: false,
@@ -200,8 +208,8 @@ router.delete('/:token/emails/:emailId', rateLimiter, async (req, res) => {
       });
     }
     
-    const email = await Email.findById(emailId);
-    if (!email || email.temp_email_id !== tempEmail.id) {
+    const emailRecord = await Email.findById(emailId);
+    if (!emailRecord || emailRecord.temp_email_id !== tempEmail.id) {
       return res.status(404).json({
         success: false,
         error: 'Email not found'
@@ -223,12 +231,15 @@ router.delete('/:token/emails/:emailId', rateLimiter, async (req, res) => {
   }
 });
 
-// DELETE /api/temp-email/:token/emails - Delete all emails for temporary email
-router.delete('/:token/emails', rateLimiter, async (req, res) => {
+// DELETE /api/temp-email/:email/emails - Delete all emails for temporary email
+router.delete('/:email/emails', rateLimiter, async (req, res) => {
   try {
-    const { token } = req.params;
+    const { email } = req.params;
     
-    const tempEmail = await TempEmail.findByToken(token);
+    // Decode email address (in case it was URL encoded)
+    const emailAddress = decodeURIComponent(email);
+    
+    const tempEmail = await TempEmail.findByEmail(emailAddress);
     if (!tempEmail) {
       return res.status(404).json({
         success: false,
@@ -251,13 +262,16 @@ router.delete('/:token/emails', rateLimiter, async (req, res) => {
   }
 });
 
-// POST /api/temp-email/:token/search - Search emails
-router.post('/:token/search', rateLimiter, validateRequest(searchEmailsSchema), async (req, res) => {
+// POST /api/temp-email/:email/search - Search emails
+router.post('/:email/search', rateLimiter, validateRequest(searchEmailsSchema), async (req, res) => {
   try {
-    const { token } = req.params;
+    const { email } = req.params;
     const { query, limit, offset } = req.body;
     
-    const tempEmail = await TempEmail.findByToken(token);
+    // Decode email address (in case it was URL encoded)
+    const emailAddress = decodeURIComponent(email);
+    
+    const tempEmail = await TempEmail.findByEmail(emailAddress);
     if (!tempEmail) {
       return res.status(404).json({
         success: false,
@@ -270,14 +284,15 @@ router.post('/:token/search', rateLimiter, validateRequest(searchEmailsSchema), 
       offset: parseInt(offset)
     });
     
-    const emailPreviews = await Promise.all(
-      emails.map(email => EmailService.getEmailPreview(email))
+    // Return full email content instead of just previews
+    const emailData = await Promise.all(
+      emails.map(email => EmailService.getFullEmailData(email))
     );
     
     res.json({
       success: true,
       data: {
-        emails: emailPreviews,
+        emails: emailData,
         searchQuery: query,
         count: emails.length
       }
@@ -291,10 +306,10 @@ router.post('/:token/search', rateLimiter, validateRequest(searchEmailsSchema), 
   }
 });
 
-// PUT /api/temp-email/:token/extend - Extend temporary email expiry
-router.put('/:token/extend', rateLimiter, async (req, res) => {
+// PUT /api/temp-email/:email/extend - Extend temporary email expiry
+router.put('/:email/extend', rateLimiter, async (req, res) => {
   try {
-    const { token } = req.params;
+    const { email } = req.params;
     const { hours = 24 } = req.body;
     
     if (hours < 1 || hours > 168) {
@@ -304,7 +319,10 @@ router.put('/:token/extend', rateLimiter, async (req, res) => {
       });
     }
     
-    const tempEmail = await TempEmail.findByToken(token);
+    // Decode email address (in case it was URL encoded)
+    const emailAddress = decodeURIComponent(email);
+    
+    const tempEmail = await TempEmail.findByEmail(emailAddress);
     if (!tempEmail) {
       return res.status(404).json({
         success: false,
@@ -331,12 +349,15 @@ router.put('/:token/extend', rateLimiter, async (req, res) => {
   }
 });
 
-// GET /api/temp-email/:token/stats - Get email statistics
-router.get('/:token/stats', rateLimiter, async (req, res) => {
+// GET /api/temp-email/:email/stats - Get email statistics
+router.get('/:email/stats', rateLimiter, async (req, res) => {
   try {
-    const { token } = req.params;
+    const { email } = req.params;
     
-    const tempEmail = await TempEmail.findByToken(token);
+    // Decode email address (in case it was URL encoded)
+    const emailAddress = decodeURIComponent(email);
+    
+    const tempEmail = await TempEmail.findByEmail(emailAddress);
     if (!tempEmail) {
       return res.status(404).json({
         success: false,
