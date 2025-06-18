@@ -242,7 +242,7 @@ class EmailService {
     };
   }
 
-  static async getFullEmailData(email) {
+  static async getEmailData(email, fields = null) {
     // Parse attachments if they're stored as JSON string
     let attachments = email.attachments || [];
     if (typeof attachments === 'string') {
@@ -263,8 +263,8 @@ class EmailService {
       }
     }
 
-    // Return complete email data including full body and subject
-    return {
+    // Full email data object
+    const fullEmailData = {
       id: email.id,
       from: email.sender_email,
       fromName: email.sender_name,
@@ -279,6 +279,30 @@ class EmailService {
       attachments: attachments,
       headers: headers
     };
+
+    // If no fields specified, return all data
+    if (!fields) {
+      return fullEmailData;
+    }
+
+    // Parse requested fields
+    const requestedFields = fields.split(',').map(field => field.trim());
+    
+    // Create filtered object with only requested fields
+    const filteredData = {};
+    
+    requestedFields.forEach(field => {
+      if (fullEmailData.hasOwnProperty(field)) {
+        filteredData[field] = fullEmailData[field];
+      }
+    });
+
+    return filteredData;
+  }
+
+  static async getFullEmailData(email) {
+    // Backward compatibility - calls getEmailData with no field restrictions
+    return this.getEmailData(email, null);
   }
 
   static createTextPreview(text, maxLength = 150) {

@@ -17,13 +17,55 @@ const createTempEmailSchema = Joi.object({
 const getEmailsSchema = Joi.object({
   limit: Joi.number().integer().min(1).max(100).default(50),
   offset: Joi.number().integer().min(0).default(0),
-  onlyUnread: Joi.boolean().default(false)
+  onlyUnread: Joi.boolean().default(false),
+  fields: Joi.string().optional().custom((value, helpers) => {
+    // Validate field names
+    const allowedFields = [
+      'id', 'from', 'fromName', 'subject', 'receivedAt', 'isRead', 
+      'hasAttachments', 'size', 'preview', 'bodyText', 'bodyHtml', 
+      'attachments', 'headers'
+    ];
+    
+    if (value) {
+      const requestedFields = value.split(',').map(f => f.trim());
+      const invalidFields = requestedFields.filter(field => !allowedFields.includes(field));
+      
+      if (invalidFields.length > 0) {
+        return helpers.error('any.invalid', { 
+          message: `Invalid fields: ${invalidFields.join(', ')}. Allowed: ${allowedFields.join(', ')}` 
+        });
+      }
+    }
+    
+    return value;
+  })
 });
 
 const searchEmailsSchema = Joi.object({
   query: Joi.string().required().min(1).max(100),
   limit: Joi.number().integer().min(1).max(50).default(20),
-  offset: Joi.number().integer().min(0).default(0)
+  offset: Joi.number().integer().min(0).default(0),
+  fields: Joi.string().optional().custom((value, helpers) => {
+    // Validate field names (same validation as above)
+    const allowedFields = [
+      'id', 'from', 'fromName', 'subject', 'receivedAt', 'isRead', 
+      'hasAttachments', 'size', 'preview', 'bodyText', 'bodyHtml', 
+      'attachments', 'headers'
+    ];
+    
+    if (value) {
+      const requestedFields = value.split(',').map(f => f.trim());
+      const invalidFields = requestedFields.filter(field => !allowedFields.includes(field));
+      
+      if (invalidFields.length > 0) {
+        return helpers.error('any.invalid', { 
+          message: `Invalid fields: ${invalidFields.join(', ')}. Allowed: ${allowedFields.join(', ')}` 
+        });
+      }
+    }
+    
+    return value;
+  })
 });
 
 // POST /api/temp-email/generate - Generate a new temporary email
@@ -81,7 +123,7 @@ router.post('/generate', rateLimiter, validateRequest(createTempEmailSchema), as
 router.get('/:email/emails', rateLimiter, validateRequest(getEmailsSchema, 'query'), async (req, res) => {
   try {
     const { email } = req.params;
-    const { limit, offset, onlyUnread } = req.query;
+    const { limit, offset, onlyUnread, fields } = req.query;
     
     // Decode email address (in case it was URL encoded)
     const emailAddress = decodeURIComponent(email);
@@ -105,16 +147,17 @@ router.get('/:email/emails', rateLimiter, validateRequest(getEmailsSchema, 'quer
     const emails = await Email.findByTempEmailId(tempEmail.id, {
       limit: parseInt(limit),
       offset: parseInt(offset),
-      onlyUnread: onlyUnread === 'true'
+      onlyUnread: onlyUnread === 'true',
+      fields: fields
     });
     
     // Get email count
     const totalCount = await Email.getEmailCount(tempEmail.id);
     const unreadCount = await Email.getEmailCount(tempEmail.id, true);
     
-    // Return full email content instead of just previews
+    // Return email data with optional field selection
     const emailData = await Promise.all(
-      emails.map(email => EmailService.getFullEmailData(email))
+      emails.map(email => EmailService.getEmailData(email, fields))
     );
     
     res.json({
@@ -266,7 +309,7 @@ router.delete('/:email/emails', rateLimiter, async (req, res) => {
 router.post('/:email/search', rateLimiter, validateRequest(searchEmailsSchema), async (req, res) => {
   try {
     const { email } = req.params;
-    const { query, limit, offset } = req.body;
+    const { query, limit, offset, fields } = req.body;
     
     // Decode email address (in case it was URL encoded)
     const emailAddress = decodeURIComponent(email);
@@ -281,12 +324,13 @@ router.post('/:email/search', rateLimiter, validateRequest(searchEmailsSchema), 
     
     const emails = await Email.searchEmails(tempEmail.id, query, {
       limit: parseInt(limit),
-      offset: parseInt(offset)
+      offset: parseInt(offset),
+      fields: fields
     });
     
-    // Return full email content instead of just previews
+    // Return email data with optional field selection
     const emailData = await Promise.all(
-      emails.map(email => EmailService.getFullEmailData(email))
+      emails.map(email => EmailService.getEmailData(email, fields))
     );
     
     res.json({

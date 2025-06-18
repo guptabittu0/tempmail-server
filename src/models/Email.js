@@ -34,7 +34,7 @@ class Email {
   }
 
   static async findByTempEmailId(tempEmailId, options = {}) {
-    const { limit = 50, offset = 0, onlyUnread = false } = options;
+    const { limit = 50, offset = 0, onlyUnread = false, fields = null } = options;
     
     let whereClause = 'WHERE temp_email_id = $1';
     let params = [tempEmailId];
@@ -42,9 +42,49 @@ class Email {
     if (onlyUnread) {
       whereClause += ' AND is_read = false';
     }
+
+    // Optimize SELECT clause based on requested fields
+    let selectClause = '*';
+    if (fields) {
+      const requestedFields = fields.split(',').map(f => f.trim());
+      const dbFieldMap = {
+        'id': 'id',
+        'from': 'sender_email',
+        'fromName': 'sender_name', 
+        'subject': 'subject',
+        'receivedAt': 'received_at',
+        'isRead': 'is_read',
+        'hasAttachments': 'attachments',
+        'size': 'size_bytes',
+        'preview': 'body_text',
+        'bodyText': 'body_text',
+        'bodyHtml': 'body_html',
+        'attachments': 'attachments',
+        'headers': 'headers'
+      };
+
+      // Always include id and temp_email_id for proper functioning
+      const dbFields = ['id', 'temp_email_id'];
+      
+      // Add requested fields
+      requestedFields.forEach(field => {
+        if (dbFieldMap[field] && !dbFields.includes(dbFieldMap[field])) {
+          dbFields.push(dbFieldMap[field]);
+        }
+      });
+
+      // If bodyText or preview is requested, we need body_text
+      if (requestedFields.includes('preview') || requestedFields.includes('bodyText')) {
+        if (!dbFields.includes('body_text')) {
+          dbFields.push('body_text');
+        }
+      }
+
+      selectClause = dbFields.join(', ');
+    }
     
     const result = await query(
-      `SELECT * FROM emails 
+      `SELECT ${selectClause} FROM emails 
        ${whereClause} 
        ORDER BY received_at DESC 
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
@@ -118,13 +158,48 @@ class Email {
   }
 
   static async searchEmails(tempEmailId, searchQuery, options = {}) {
-    const { limit = 50, offset = 0 } = options;
+    const { limit = 50, offset = 0, fields = null } = options;
+    
+    // Optimize SELECT clause based on requested fields
+    let selectClause = '*, ts_rank(to_tsvector(\'english\', subject || \' \' || coalesce(body_text, \'\')), plainto_tsquery(\'english\', $2)) as rank';
+    if (fields) {
+      const requestedFields = fields.split(',').map(f => f.trim());
+      const dbFieldMap = {
+        'id': 'id',
+        'from': 'sender_email',
+        'fromName': 'sender_name', 
+        'subject': 'subject',
+        'receivedAt': 'received_at',
+        'isRead': 'is_read',
+        'hasAttachments': 'attachments',
+        'size': 'size_bytes',
+        'preview': 'body_text',
+        'bodyText': 'body_text',
+        'bodyHtml': 'body_html',
+        'attachments': 'attachments',
+        'headers': 'headers'
+      };
+
+      // Always include id and temp_email_id for proper functioning
+      const dbFields = ['id', 'temp_email_id'];
+      
+      // Add requested fields
+      requestedFields.forEach(field => {
+        if (dbFieldMap[field] && !dbFields.includes(dbFieldMap[field])) {
+          dbFields.push(dbFieldMap[field]);
+        }
+      });
+
+      // For search, we always need subject and body_text for ranking
+      if (!dbFields.includes('subject')) dbFields.push('subject');
+      if (!dbFields.includes('body_text')) dbFields.push('body_text');
+
+      selectClause = `${dbFields.join(', ')}, ts_rank(to_tsvector('english', subject || ' ' || coalesce(body_text, '')), plainto_tsquery('english', $2)) as rank`;
+    }
     
     // Use full-text search with GIN index for better performance
     const result = await query(
-      `SELECT *, 
-       ts_rank(to_tsvector('english', subject || ' ' || coalesce(body_text, '')), 
-               plainto_tsquery('english', $2)) as rank
+      `SELECT ${selectClause}
        FROM emails 
        WHERE temp_email_id = $1 
        AND (
