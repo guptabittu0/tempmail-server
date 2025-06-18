@@ -1,6 +1,14 @@
-// SMTP-like protocol handler for more advanced integration
-class SMTPHandler  {
+const net = require('net');
+const EmailService = require('./emailService');
+
+// SMTP server handler for receiving emails directly
+class SMTPHandler {
   constructor(options = {}) {
+    this.port = options.port || 25;
+    this.host = options.host || '0.0.0.0';
+    this.server = null;
+    this.connections = new Set();
+    
     this.currentState = "INIT";
     this.currentMail = {
       from: "",
@@ -9,12 +17,58 @@ class SMTPHandler  {
     };
   }
 
+  async start() {
+    return new Promise((resolve, reject) => {
+      this.server = net.createServer((socket) => {
+        this.handleConnection(socket);
+      });
+
+      this.server.on('error', (error) => {
+        reject(error);
+      });
+
+      this.server.listen(this.port, this.host, () => {
+        console.log(`📬 SMTP server listening on ${this.host}:${this.port}`);
+        resolve();
+      });
+    });
+  }
+
+  async stop() {
+    return new Promise((resolve) => {
+      if (this.server) {
+        // Close all connections
+        this.connections.forEach(socket => {
+          socket.destroy();
+        });
+        this.connections.clear();
+
+        this.server.close(() => {
+          console.log('SMTP server stopped');
+          resolve();
+        });
+      } else {
+        resolve();
+      }
+    });
+  }
+
   handleConnection(socket) {
     let buffer = "";
+    this.connections.add(socket);
+
+    // Initialize mail state for this connection
+    let mailState = {
+      state: "READY",
+      mail: {
+        from: "",
+        to: [],
+        data: "",
+      }
+    };
 
     // Send greeting
     socket.write("220 tempmail.local SMTP Service Ready\r\n");
-    this.currentState = "READY";
 
     socket.on("data", (data) => {
       buffer += data.toString();
@@ -24,57 +78,63 @@ class SMTPHandler  {
       buffer = lines.pop() || ""; // Keep incomplete line in buffer
 
       for (const line of lines) {
-        this.handleSMTPCommand(socket, line);
+        this.handleSMTPCommand(socket, line, mailState);
       }
     });
 
     socket.on("end", () => {
+      this.connections.delete(socket);
       console.log("SMTP connection ended");
     });
 
     socket.on("error", (error) => {
+      this.connections.delete(socket);
       console.error("SMTP socket error:", error);
+    });
+
+    socket.on('close', () => {
+      this.connections.delete(socket);
     });
   }
 
-  handleSMTPCommand(socket, command) {
+  handleSMTPCommand(socket, command, mailState) {
     const cmd = command.toUpperCase();
 
     try {
       if (cmd.startsWith("HELO") || cmd.startsWith("EHLO")) {
         socket.write("250 tempmail.local Hello\r\n");
-        this.currentState = "READY";
+        mailState.state = "READY";
       } else if (cmd.startsWith("MAIL FROM:")) {
         const from = this.extractEmail(cmd);
-        this.currentMail.from = from;
+        mailState.mail.from = from;
         socket.write("250 OK\r\n");
-        this.currentState = "MAIL";
+        mailState.state = "MAIL";
       } else if (cmd.startsWith("RCPT TO:")) {
         const to = this.extractEmail(cmd);
-        this.currentMail.to.push(to);
+        mailState.mail.to.push(to);
         socket.write("250 OK\r\n");
-        this.currentState = "RCPT";
+        mailState.state = "RCPT";
       } else if (cmd === "DATA") {
         socket.write("354 Start mail input; end with <CRLF>.<CRLF>\r\n");
-        this.currentState = "DATA";
-        this.currentMail.data = "";
-      } else if (this.currentState === "DATA") {
+        mailState.state = "DATA";
+        mailState.mail.data = "";
+      } else if (mailState.state === "DATA") {
         if (command === ".") {
           // End of data
           socket.write("250 OK: Message accepted\r\n");
-          this.processSMTPEmail();
-          this.resetCurrentMail();
-          this.currentState = "READY";
+          this.processSMTPEmail(mailState.mail);
+          this.resetCurrentMail(mailState);
+          mailState.state = "READY";
         } else {
-          this.currentMail.data += command + "\r\n";
+          mailState.mail.data += command + "\r\n";
         }
       } else if (cmd === "QUIT") {
         socket.write("221 Bye\r\n");
         socket.end();
       } else if (cmd === "RSET") {
-        this.resetCurrentMail();
+        this.resetCurrentMail(mailState);
         socket.write("250 OK\r\n");
-        this.currentState = "READY";
+        mailState.state = "READY";
       } else {
         socket.write("500 Command not recognized\r\n");
       }
@@ -89,31 +149,33 @@ class SMTPHandler  {
     return match ? match[1] : "";
   }
 
-  async processSMTPEmail() {
+  async processSMTPEmail(mail) {
     try {
+      console.log(`📧 Processing email from ${mail.from} to ${mail.to.join(', ')}`);
+      
       // Build raw email format
       const rawEmail = [
-        `From: ${this.currentMail.from}`,
-        `To: ${this.currentMail.to.join(", ")}`,
+        `From: ${mail.from}`,
+        `To: ${mail.to.join(", ")}`,
         `Date: ${new Date().toUTCString()}`,
         "",
-        this.currentMail.data,
+        mail.data,
       ].join("\r\n");
 
       const result = await EmailService.processIncomingEmail(rawEmail);
 
       if (result) {
-        console.log(`SMTP email processed successfully: ${result.id}`);
+        console.log(`✅ SMTP email processed successfully: ${result.id}`);
       } else {
-        console.log("SMTP email was not processed");
+        console.log("⚠️ SMTP email was not processed (no matching temp email)");
       }
     } catch (error) {
-      console.error("Error processing SMTP email:", error);
+      console.error("❌ Error processing SMTP email:", error);
     }
   }
 
-  resetCurrentMail() {
-    this.currentMail = {
+  resetCurrentMail(mailState) {
+    mailState.mail = {
       from: "",
       to: [],
       data: "",
