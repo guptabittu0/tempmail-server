@@ -70,17 +70,48 @@ const initializeDatabase = async () => {
     `);
 
     await query(`
+      CREATE INDEX IF NOT EXISTS idx_temp_emails_active ON temp_emails(is_active) WHERE is_active = true;
+    `);
+
+    await query(`
       CREATE INDEX IF NOT EXISTS idx_emails_temp_email_id ON emails(temp_email_id);
     `);
 
     await query(`
-      CREATE INDEX IF NOT EXISTS idx_emails_received_at ON emails(received_at);
+      CREATE INDEX IF NOT EXISTS idx_emails_received_at ON emails(received_at DESC);
     `);
 
     await query(`
       CREATE INDEX IF NOT EXISTS idx_emails_recipient ON emails(recipient_email);
     `);
+
+    await query(`
+      CREATE INDEX IF NOT EXISTS idx_emails_unread ON emails(temp_email_id, is_read) WHERE is_read = false;
+    `);
+
+    await query(`
+      CREATE INDEX IF NOT EXISTS idx_emails_search ON emails USING gin(to_tsvector('english', subject || ' ' || coalesce(body_text, '')));
+    `);
+
+    await query(`
+      CREATE INDEX IF NOT EXISTS idx_emails_sender ON emails(sender_email);
+    `);
     console.log('✅ Created database indexes');
+
+    // Optimize PostgreSQL settings for better performance
+    try {
+      await query(`
+        SET maintenance_work_mem = '256MB';
+      `);
+      
+      await query(`
+        SET shared_preload_libraries = 'pg_stat_statements';
+      `);
+      
+      console.log('✅ Applied performance optimizations');
+    } catch (error) {
+      console.log('⚠️ Some performance optimizations skipped (may need admin privileges)');
+    }
 
     console.log('🎉 Database initialized successfully!');
   } catch (error) {

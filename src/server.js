@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const compression = require('compression');
 require('dotenv').config();
 
 // Import routes and services
@@ -13,6 +14,20 @@ const SMTPHandler = require('./services/smptServer');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const SMTP_PORT = parseInt(process.env.SMTP_PORT) || 25;
+
+// Performance optimization: Gzip compression
+app.use(compression({
+  level: 6, // Balanced compression level
+  threshold: 1024, // Only compress responses larger than 1KB
+  filter: (req, res) => {
+    // Don't compress if the user doesn't want it
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    // Fallback to standard filter function
+    return compression.filter(req, res);
+  }
+}));
 
 // Security middleware
 app.use(helmet({
@@ -34,15 +49,34 @@ app.use(cors({
   credentials: true
 }));
 
-// Request parsing middleware
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Request parsing middleware with optimized limits
+app.use(express.json({ 
+  limit: '10mb',
+  reviver: null // Disable JSON parsing reviver for performance
+}));
+app.use(express.urlencoded({ 
+  extended: true, 
+  limit: '10mb',
+  parameterLimit: 1000 // Limit URL parameters for security
+}));
 
-// Logging middleware
-app.use(morgan('combined'));
+// Optimized logging middleware (production-ready)
+const logFormat = process.env.NODE_ENV === 'production' 
+  ? 'combined' 
+  : 'dev';
+app.use(morgan(logFormat, {
+  skip: (req, res) => {
+    // Skip health check logs in production for performance
+    return process.env.NODE_ENV === 'production' && req.url === '/health';
+  }
+}));
 
 // Trust proxy (for rate limiting and IP detection)
 app.set('trust proxy', 1);
+
+// Optimize JSON responses
+app.set('json replacer', null);
+app.set('json spaces', process.env.NODE_ENV === 'production' ? 0 : 2);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

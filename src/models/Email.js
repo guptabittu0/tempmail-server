@@ -120,17 +120,22 @@ class Email {
   static async searchEmails(tempEmailId, searchQuery, options = {}) {
     const { limit = 50, offset = 0 } = options;
     
+    // Use full-text search with GIN index for better performance
     const result = await query(
-      `SELECT * FROM emails 
+      `SELECT *, 
+       ts_rank(to_tsvector('english', subject || ' ' || coalesce(body_text, '')), 
+               plainto_tsquery('english', $2)) as rank
+       FROM emails 
        WHERE temp_email_id = $1 
        AND (
-         subject ILIKE $2 
-         OR sender_email ILIKE $2 
-         OR body_text ILIKE $2
+         to_tsvector('english', subject || ' ' || coalesce(body_text, '')) @@ plainto_tsquery('english', $2)
+         OR subject ILIKE $3 
+         OR sender_email ILIKE $3 
+         OR body_text ILIKE $3
        )
-       ORDER BY received_at DESC 
-       LIMIT $3 OFFSET $4`,
-      [tempEmailId, `%${searchQuery}%`, limit, offset]
+       ORDER BY rank DESC, received_at DESC 
+       LIMIT $4 OFFSET $5`,
+      [tempEmailId, searchQuery, `%${searchQuery}%`, limit, offset]
     );
 
     return result.rows;

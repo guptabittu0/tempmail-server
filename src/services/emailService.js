@@ -5,8 +5,26 @@ const Email = require('../models/Email');
 class EmailService {
   static async processIncomingEmail(rawEmail) {
     try {
-      // Parse the raw email
-      const parsed = await simpleParser(rawEmail);
+      console.log('📥 Processing incoming email...');
+      console.log('Raw email length:', rawEmail.length);
+      
+      // Parse the raw email with more detailed options
+      const parsed = await simpleParser(rawEmail, {
+        skipHtmlToText: false,
+        skipTextToHtml: false,
+        skipImageLinks: true,
+        maxHtmlLengthToParse: 1000000,
+        streamAttachments: false
+      });
+
+      console.log('📋 Parsed email details:');
+      console.log('- Subject:', parsed.subject);
+      console.log('- From:', parsed.from?.text);
+      console.log('- To:', parsed.to?.text);
+      console.log('- Has text body:', !!parsed.text);
+      console.log('- Has HTML body:', !!parsed.html);
+      console.log('- Text length:', parsed.text?.length || 0);
+      console.log('- HTML length:', parsed.html?.length || 0);
       
       // Extract recipient email
       const recipientEmail = this.extractRecipientEmail(parsed);
@@ -14,16 +32,18 @@ class EmailService {
         throw new Error('No recipient email found');
       }
 
+      console.log('🎯 Recipient email:', recipientEmail);
+
       // Find the temporary email in database
       const tempEmail = await TempEmail.findByEmail(recipientEmail);
       if (!tempEmail) {
-        console.log(`No temporary email found for: ${recipientEmail}`);
+        console.log(`❌ No temporary email found for: ${recipientEmail}`);
         return null;
       }
 
       // Check if temporary email is expired
       if (new Date() > new Date(tempEmail.expires_at)) {
-        console.log(`Temporary email expired: ${recipientEmail}`);
+        console.log(`⏰ Temporary email expired: ${recipientEmail}`);
         return null;
       }
 
@@ -33,6 +53,50 @@ class EmailService {
       // Calculate email size
       const sizeBytes = Buffer.byteLength(rawEmail, 'utf8');
 
+      // Process and clean email content
+      let subject = parsed.subject || '(No Subject)';
+      let bodyText = parsed.text || '';
+      let bodyHtml = parsed.html || '';
+
+      // Clean up body text - remove excessive headers if they leaked through
+      if (bodyText && bodyText.includes('Received: by') && bodyText.includes('DKIM-Signature:')) {
+        console.log('⚠️ Detected raw headers in body text, attempting to clean...');
+        
+        // Try to extract just the actual message content
+        const lines = bodyText.split('\n');
+        let messageStartIndex = -1;
+        
+        // Look for common email body separators
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          
+          // Look for MIME boundary markers or empty lines after headers
+          if (line.startsWith('--') && line.includes('boundary') ||
+              (i > 0 && lines[i-1].trim() === '' && line.length > 0 && !line.includes(':'))) {
+            messageStartIndex = i;
+            break;
+          }
+          
+          // Look for quoted-printable content start
+          if (line.includes('Content-Type: text/plain') || 
+              line.includes('Content-Transfer-Encoding:')) {
+            // Skip a few lines to get past headers
+            messageStartIndex = Math.min(i + 3, lines.length - 1);
+            break;
+          }
+        }
+        
+        if (messageStartIndex > 0) {
+          bodyText = lines.slice(messageStartIndex).join('\n').trim();
+          console.log('✅ Cleaned body text, new length:', bodyText.length);
+        }
+      }
+
+      // Decode quoted-printable content if present
+      if (bodyText.includes('=E2=80=') || bodyText.includes('=\n')) {
+        bodyText = this.decodeQuotedPrintable(bodyText);
+      }
+
       // Create email record
       const emailData = {
         tempEmailId: tempEmail.id,
@@ -40,21 +104,41 @@ class EmailService {
         senderEmail: parsed.from?.value?.[0]?.address || 'unknown',
         senderName: parsed.from?.value?.[0]?.name || null,
         recipientEmail: recipientEmail,
-        subject: parsed.subject || '(No Subject)',
-        bodyText: parsed.text || '',
-        bodyHtml: parsed.html || '',
+        subject: subject.trim(),
+        bodyText: bodyText.trim(),
+        bodyHtml: bodyHtml.trim(),
         attachments: attachments,
         headers: this.extractHeaders(parsed),
         sizeBytes: sizeBytes
       };
 
+      console.log('📝 Email data to save:');
+      console.log('- Subject:', emailData.subject);
+      console.log('- Body text length:', emailData.bodyText.length);
+      console.log('- Body HTML length:', emailData.bodyHtml.length);
+      console.log('- Attachments:', emailData.attachments.length);
+
       const savedEmail = await Email.create(emailData);
-      console.log(`Email saved successfully: ${savedEmail.id}`);
+      console.log(`✅ Email saved successfully: ${savedEmail.id}`);
       
       return savedEmail;
     } catch (error) {
-      console.error('Error processing incoming email:', error);
+      console.error('❌ Error processing incoming email:', error);
       throw error;
+    }
+  }
+
+  static decodeQuotedPrintable(text) {
+    try {
+      // Basic quoted-printable decoding
+      return text
+        .replace(/=\r?\n/g, '') // Remove soft line breaks
+        .replace(/=([0-9A-F]{2})/g, (match, hex) => {
+          return String.fromCharCode(parseInt(hex, 16));
+        });
+    } catch (error) {
+      console.warn('Failed to decode quoted-printable:', error);
+      return text;
     }
   }
 
@@ -159,6 +243,26 @@ class EmailService {
   }
 
   static async getFullEmailData(email) {
+    // Parse attachments if they're stored as JSON string
+    let attachments = email.attachments || [];
+    if (typeof attachments === 'string') {
+      try {
+        attachments = JSON.parse(attachments);
+      } catch (e) {
+        attachments = [];
+      }
+    }
+
+    // Parse headers if they're stored as JSON string
+    let headers = email.headers || {};
+    if (typeof headers === 'string') {
+      try {
+        headers = JSON.parse(headers);
+      } catch (e) {
+        headers = {};
+      }
+    }
+
     // Return complete email data including full body and subject
     return {
       id: email.id,
@@ -167,13 +271,13 @@ class EmailService {
       subject: email.subject || '(No Subject)',
       receivedAt: email.received_at,
       isRead: email.is_read,
-      hasAttachments: email.attachments && Array.isArray(email.attachments) ? email.attachments.length > 0 : false,
+      hasAttachments: Array.isArray(attachments) ? attachments.length > 0 : false,
       size: email.size_bytes,
       preview: this.createTextPreview(email.body_text, 150),
       bodyText: email.body_text || '',
       bodyHtml: email.body_html || '',
-      attachments: email.attachments || [],
-      headers: email.headers || {}
+      attachments: attachments,
+      headers: headers
     };
   }
 
@@ -191,6 +295,26 @@ class EmailService {
   }
 
   static async getEmailContent(email) {
+    // Parse attachments and headers if they're JSON strings
+    let attachments = email.attachments || [];
+    let headers = email.headers || {};
+    
+    if (typeof attachments === 'string') {
+      try {
+        attachments = JSON.parse(attachments);
+      } catch (e) {
+        attachments = [];
+      }
+    }
+    
+    if (typeof headers === 'string') {
+      try {
+        headers = JSON.parse(headers);
+      } catch (e) {
+        headers = {};
+      }
+    }
+
     // Return full email content for display
     return {
       id: email.id,
@@ -202,8 +326,8 @@ class EmailService {
       isRead: email.is_read,
       bodyText: email.body_text,
       bodyHtml: email.body_html,
-      attachments: email.attachments || [],
-      headers: email.headers || {},
+      attachments: attachments,
+      headers: headers,
       size: email.size_bytes
     };
   }

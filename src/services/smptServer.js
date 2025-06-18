@@ -151,23 +151,17 @@ class SMTPHandler {
 
   async processSMTPEmail(mail) {
     try {
-      console.log(`📧 Processing email from ${mail.from} to ${mail.to.join(', ')}`);
+      console.log(`📧 Processing SMTP email from ${mail.from} to ${mail.to.join(', ')}`);
+      console.log(`📏 Email data length: ${mail.data.length} characters`);
       
-      // Build raw email format
-      const rawEmail = [
-        `From: ${mail.from}`,
-        `To: ${mail.to.join(", ")}`,
-        `Date: ${new Date().toUTCString()}`,
-        "",
-        mail.data,
-      ].join("\r\n");
-
-      const result = await EmailService.processIncomingEmail(rawEmail);
+      // Pass the raw email data directly to the email service
+      // Don't add extra headers as this interferes with mailparser
+      const result = await EmailService.processIncomingEmail(mail.data);
 
       if (result) {
         console.log(`✅ SMTP email processed successfully: ${result.id}`);
       } else {
-        console.log("⚠️ SMTP email was not processed (no matching temp email)");
+        console.log("⚠️ SMTP email was not processed (no matching temp email or expired)");
       }
     } catch (error) {
       console.error("❌ Error processing SMTP email:", error);
