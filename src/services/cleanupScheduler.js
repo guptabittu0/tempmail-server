@@ -116,11 +116,8 @@ class CleanupScheduler {
     try {
       console.log('Performing weekly maintenance...');
 
-      // Cleanup very old records (older than configured retention + buffer)
-      const extendedRetentionHours = (parseInt(process.env.EMAIL_RETENTION_HOURS) || 24) * 7; // 7x normal retention
-      
-      const veryOldEmails = await Email.cleanup(extendedRetentionHours);
-      const veryOldTempEmails = await TempEmail.cleanup();
+      // Only cleanup expired temporary email addresses
+      const expiredTempEmails = await TempEmail.cleanup();
 
       // You could add more maintenance tasks here:
       // - Database vacuum/analyze
@@ -129,13 +126,11 @@ class CleanupScheduler {
       // - Performance monitoring
 
       console.log(`Weekly maintenance completed:`, {
-        veryOldEmailsDeleted: veryOldEmails,
-        veryOldTempEmailsDeleted: veryOldTempEmails
+        expiredTempEmailsDeleted: expiredTempEmails
       });
 
       return {
-        veryOldEmailsDeleted: veryOldEmails,
-        veryOldTempEmailsDeleted: veryOldTempEmails
+        expiredTempEmailsDeleted: expiredTempEmails
       };
     } catch (error) {
       console.error('Error during weekly maintenance:', error);

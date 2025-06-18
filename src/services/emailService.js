@@ -199,21 +199,15 @@ class EmailService {
 
   static async cleanupExpiredEmails() {
     try {
-      console.log('Starting email cleanup...');
+      console.log('Starting cleanup...');
       
-      // Get retention hours from environment
-      const retentionHours = parseInt(process.env.EMAIL_RETENTION_HOURS) || 24;
-      
-      // Cleanup emails
-      const deletedEmails = await Email.cleanup(retentionHours);
-      
-      // Cleanup expired temporary email addresses
+      // Only cleanup expired temporary email addresses, not the emails themselves
       const deletedTempEmails = await TempEmail.cleanup();
       
-      console.log(`Cleanup complete: ${deletedEmails} emails, ${deletedTempEmails} temp emails deleted`);
+      console.log(`Cleanup complete: ${deletedTempEmails} expired temp emails deleted`);
       
       return {
-        deletedEmails,
+        deletedEmails: 0, // No longer deleting emails automatically
         deletedTempEmails
       };
     } catch (error) {

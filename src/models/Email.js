@@ -130,16 +130,8 @@ class Email {
     return result.rowCount;
   }
 
-  static async cleanup(hoursOld = 24) {
-    const cutoffDate = new Date(Date.now() - (hoursOld * 60 * 60 * 1000));
-    
-    const result = await query(
-      'DELETE FROM emails WHERE received_at < $1',
-      [cutoffDate]
-    );
-
-    return result.rowCount;
-  }
+  // Email cleanup method removed - emails no longer expire automatically
+  // Only temporary email addresses expire, not the emails themselves
 
   static async getEmailsByRecipient(recipientEmail, options = {}) {
     const { limit = 50, offset = 0 } = options;
